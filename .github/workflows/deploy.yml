@@ -57,8 +57,8 @@ jobs:
       - name: Set image variables
         id: vars
         run: |
-          REGISTRY="${{ secrets.GCP_REGION }}-docker.pkg.dev"
-          IMAGE="${REGISTRY}/${{ secrets.GCP_PROJECT_ID }}/wave-api-mimiker"
+          REGISTRY="us-central1-docker.pkg.dev"
+          IMAGE="${REGISTRY}/kalipeh/wave-api-mimiker"
           echo "registry=${REGISTRY}"              >> $GITHUB_OUTPUT
           echo "image=${IMAGE}"                    >> $GITHUB_OUTPUT
           echo "image_tag=${IMAGE}:${{ github.sha }}" >> $GITHUB_OUTPUT
