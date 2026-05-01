@@ -1,0 +1,6 @@
+@WaveApiMimiker_HostAddress = http://localhost:5044
+
+GET {{WaveApiMimiker_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

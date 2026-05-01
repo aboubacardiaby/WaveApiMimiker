@@ -1,0 +1,53 @@
+# Build artifacts
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio temporary files
+.vs/
+
+# Build results
+*.log
+*.vspscc
+*.vssscc
+
+# NuGet
+*.nupkg
+packages/
+.nuget/
+
+# Rider
+.idea/
+*.sln.iml
+
+# ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+# IIS Express
+/.vs/**/applicationhost.config
+/.vs/**/IISExpress/**
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# Visual Studio Code
+.vscode/
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+
+# Published output
+publish/
+
+# appsettings
+appsettings*.json
+
+# dotnet watch
+.dotnet/
