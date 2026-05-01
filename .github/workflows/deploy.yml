@@ -11,7 +11,7 @@ env:
   REGION: ${{ secrets.GCP_REGION }}          # e.g. europe-west1
   SERVICE: wave-api-mimiker                   # Cloud Run service name
   REGISTRY: ${{ secrets.GCP_REGION }}-docker.pkg.dev
-  IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/wave-api/wave-api-mimiker
+  IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/wave-api-mimiker
 
 jobs:
   # ── Job 1: Build & test ─────────────────────────────────────────────────────
