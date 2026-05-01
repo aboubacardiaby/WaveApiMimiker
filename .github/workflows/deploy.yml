@@ -58,10 +58,13 @@ jobs:
         id: vars
         run: |
           REGISTRY="us-central1-docker.pkg.dev"
-          IMAGE="${REGISTRY}/kalipeh/wave-api-mimiker"
-          echo "registry=${REGISTRY}"              >> $GITHUB_OUTPUT
-          echo "image=${IMAGE}"                    >> $GITHUB_OUTPUT
-          echo "image_tag=${IMAGE}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          PROJECT="kalipeh"
+          REPO="wave-api-mimiker"                    # ← Artifact Registry repository name
+          IMAGE_NAME="wave-api-mimiker"
+          IMAGE="${REGISTRY}/${PROJECT}/${REPO}/${IMAGE_NAME}"
+          echo "registry=${REGISTRY}"                    >> $GITHUB_OUTPUT
+          echo "image=${IMAGE}"                          >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE}:${{ github.sha }}"   >> $GITHUB_OUTPUT
 
       # ── Configure Docker for Artifact Registry ────────────────────────────────
       - name: Configure Docker for Artifact Registry
