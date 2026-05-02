@@ -46,7 +46,7 @@ jobs:
       # Fails the build if the model snapshot is out of sync with the migrations.
       - name: Verify EF migrations compile cleanly
         working-directory: WaveApiMimiker
-        run: dotnet ef migrations script --idempotent --output /dev/null --no-build
+        run: dotnet ef migrations script --idempotent --output /dev/null --configuration Release --no-build
 
   # ── Job 2: Docker build + push + Cloud Run deploy (main only) ───────────────
   deploy:
