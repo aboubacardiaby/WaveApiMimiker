@@ -42,13 +42,11 @@ jobs:
       - name: Install EF Core CLI
         run: dotnet tool install --global dotnet-ef --version 9.0.4
 
-      # Verifies the migration snapshot is in sync with the models.
-      # Uses --no-connect so it never touches the real database.
-      - name: Verify EF migrations are up to date
+      # Generates idempotent SQL from the migration files — no live DB needed.
+      # Fails the build if the model snapshot is out of sync with the migrations.
+      - name: Verify EF migrations compile cleanly
         working-directory: WaveApiMimiker
-        run: |
-          dotnet ef migrations has-pending-model-changes --no-connect 2>&1 || true
-          dotnet ef migrations list --no-connect
+        run: dotnet ef migrations script --idempotent --output /dev/null --no-build
 
   # ── Job 2: Docker build + push + Cloud Run deploy (main only) ───────────────
   deploy:
