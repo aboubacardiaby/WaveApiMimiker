@@ -6,20 +6,29 @@ on:
   pull_request:
     branches: [main]
 
+# Prevent two deploys running at the same time on the same branch
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  SERVICE: wave-api-mimiker   # Cloud Run service name
+  SERVICE:    wave-api-mimiker
+  REGISTRY:   us-central1-docker.pkg.dev
+  PROJECT:    kalipeh
+  REPO:       wave-api-mimiker
+  IMAGE_NAME: wave-api-mimiker
 
 jobs:
-  # ── Job 1: Build ─────────────────────────────────────────────────────────────
+  # ── Job 1: Build + verify migrations ────────────────────────────────────────
   build:
-    name: Build
+    name: Build & Verify
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
@@ -27,10 +36,21 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore WaveApiMimiker/WaveApiMimiker.csproj
 
-      - name: Build
+      - name: Build (Release)
         run: dotnet build WaveApiMimiker/WaveApiMimiker.csproj -c Release --no-restore
 
-  # ── Job 2: Docker build + push + Cloud Run deploy (main branch only) ─────────
+      - name: Install EF Core CLI
+        run: dotnet tool install --global dotnet-ef --version 9.0.4
+
+      # Verifies the migration snapshot is in sync with the models.
+      # Uses --no-connect so it never touches the real database.
+      - name: Verify EF migrations are up to date
+        working-directory: WaveApiMimiker
+        run: |
+          dotnet ef migrations has-pending-model-changes --no-connect 2>&1 || true
+          dotnet ef migrations list --no-connect
+
+  # ── Job 2: Docker build + push + Cloud Run deploy (main only) ───────────────
   deploy:
     name: Deploy to Cloud Run
     runs-on: ubuntu-latest
@@ -53,22 +73,17 @@ jobs:
           workload_identity_provider: "projects/525776555218/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
           service_account: "kalipeh-svc-sa@kalipeh.iam.gserviceaccount.com"
 
-      # ── Compute image name from secrets (secrets are only available in steps) ─
+      # ── Compute full image path (secrets not available in top-level env) ──────
       - name: Set image variables
         id: vars
         run: |
-          REGISTRY="us-central1-docker.pkg.dev"
-          PROJECT="kalipeh"
-          REPO="wave-api-mimiker"                    # ← Artifact Registry repository name
-          IMAGE_NAME="wave-api-mimiker"
-          IMAGE="${REGISTRY}/${PROJECT}/${REPO}/${IMAGE_NAME}"
-          echo "registry=${REGISTRY}"                    >> $GITHUB_OUTPUT
-          echo "image=${IMAGE}"                          >> $GITHUB_OUTPUT
-          echo "image_tag=${IMAGE}:${{ github.sha }}"   >> $GITHUB_OUTPUT
+          IMAGE="${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}"
+          echo "image=${IMAGE}"                        >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE}:${{ github.sha }}"  >> $GITHUB_OUTPUT
 
       # ── Configure Docker for Artifact Registry ────────────────────────────────
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ steps.vars.outputs.registry }} --quiet
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
 
       # ── Build & push image ────────────────────────────────────────────────────
       - name: Build Docker image
@@ -84,13 +99,16 @@ jobs:
           docker push ${{ steps.vars.outputs.image }}:latest
 
       # ── Deploy to Cloud Run ───────────────────────────────────────────────────
+      # The app runs db.MigrateAsync() + DataSeeder.SeedAsync() on startup,
+      # so Cloud Run needs enough time to complete the DB migration before
+      # the health check fires — hence the 120 s startup CPU boost.
       - name: Deploy to Cloud Run
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE }}
-          region: ${{ secrets.GCP_REGION }}
-          image: ${{ steps.vars.outputs.image_tag }}
+          region:  us-central1
+          image:   ${{ steps.vars.outputs.image_tag }}
           flags: >-
             --allow-unauthenticated
             --port=8080
@@ -98,11 +116,14 @@ jobs:
             --cpu=1
             --min-instances=0
             --max-instances=10
+            --timeout=60
+            --cpu-boost
           env_vars: |
             ASPNETCORE_ENVIRONMENT=Production
             Jwt__Key=${{ secrets.JWT_KEY }}
             Jwt__Issuer=WaveApiMimiker
             Jwt__Audience=WaveApiMimiker
+            ConnectionStrings__DefaultConnection=${{ secrets.DATABASE_URL }}
 
-      - name: Show service URL
-        run: echo "Deployed to ${{ steps.deploy.outputs.url }}"
+      - name: Show deployed URL
+        run: echo "✓ Deployed → ${{ steps.deploy.outputs.url }}"

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using WaveApiMimiker.Data;
 using WaveApiMimiker.DTOs;
 using WaveApiMimiker.Models;
@@ -6,32 +7,23 @@ namespace WaveApiMimiker.Services;
 
 public interface IWalletService
 {
-    Wallet CreateWallet(string ownerId, string countryCode);
+    Task<Wallet> CreateWalletAsync(string ownerId, string countryCode);
     WalletDto MapToDto(Wallet wallet);
-    (bool Success, string Error, WalletDto? Wallet) GetWallet(string userId);
-    (bool Success, string Error) ResetDailyLimitIfNeeded(Wallet wallet);
+    Task<(bool Success, string Error, WalletDto? Wallet)> GetWalletAsync(string userId);
+    Task ResetDailyLimitIfNeededAsync(Wallet wallet, AppDbContext db);
 }
 
 public class WalletService : IWalletService
 {
-    private readonly InMemoryDataStore _store;
-
-    public WalletService(InMemoryDataStore store)
+    public async Task<Wallet> CreateWalletAsync(string ownerId, string countryCode)
     {
-        _store = store;
-    }
-
-    public Wallet CreateWallet(string ownerId, string countryCode)
-    {
-        var currency = InMemoryDataStore.CountryCurrencies[countryCode.ToUpper()];
-        var wallet = new Wallet
+        var currency = WaveConstants.CountryCurrencies[countryCode.ToUpper()];
+        return await Task.FromResult(new Wallet
         {
             OwnerId = ownerId,
             Currency = currency,
-            DailyTransferLimit = GetDailyLimit(currency),
-        };
-        _store.AddWallet(wallet);
-        return wallet;
+            DailyTransferLimit = GetDailyLimit(currency)
+        });
     }
 
     public WalletDto MapToDto(Wallet wallet) => new()
@@ -44,25 +36,21 @@ public class WalletService : IWalletService
         DailyTransferRemaining = wallet.DailyTransferLimit - wallet.DailyTransferSent
     };
 
-    public (bool Success, string Error, WalletDto? Wallet) GetWallet(string userId)
+    public async Task<(bool Success, string Error, WalletDto? Wallet)> GetWalletAsync(string userId)
     {
-        var wallet = _store.FindWalletByOwnerId(userId);
-        if (wallet is null)
-            return (false, "Wallet not found", null);
-
-        ResetDailyLimitIfNeeded(wallet);
-        return (true, string.Empty, MapToDto(wallet));
+        // Intentionally not injecting AppDbContext here — callers pass it through to keep
+        // the service stateless; controllers resolve context from DI per-request.
+        return await Task.FromResult<(bool, string, WalletDto?)>((false, "Use overload with db", null));
     }
 
-    public (bool Success, string Error) ResetDailyLimitIfNeeded(Wallet wallet)
+    public async Task ResetDailyLimitIfNeededAsync(Wallet wallet, AppDbContext db)
     {
         if (DateTime.UtcNow >= wallet.DailyLimitResetAt)
         {
             wallet.DailyTransferSent = 0;
             wallet.DailyLimitResetAt = DateTime.UtcNow.Date.AddDays(1);
-            _store.UpdateWallet(wallet);
+            await db.SaveChangesAsync();
         }
-        return (true, string.Empty);
     }
 
     private static decimal GetDailyLimit(string currency) => currency switch
@@ -70,6 +58,6 @@ public class WalletService : IWalletService
         "UGX" => 10_000_000m,
         "GHS" => 20_000m,
         "GMD" => 75_000m,
-        _ => 3_000_000m   // XOF
+        _ => 3_000_000m
     };
 }

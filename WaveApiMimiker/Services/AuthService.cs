@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WaveApiMimiker.Data;
 using WaveApiMimiker.DTOs;
@@ -10,55 +11,66 @@ namespace WaveApiMimiker.Services;
 
 public interface IAuthService
 {
-    (bool Success, string Error, AuthResponseDto? Response) Register(RegisterDto dto);
-    (bool Success, string Error, AuthResponseDto? Response) Login(LoginDto dto);
+    Task<(bool Success, string Error, AuthResponseDto? Response)> RegisterAsync(RegisterDto dto);
+    Task<(bool Success, string Error, AuthResponseDto? Response)> LoginAsync(LoginDto dto);
     string GenerateToken(User user);
 }
 
 public class AuthService : IAuthService
 {
-    private readonly InMemoryDataStore _store;
+    private readonly AppDbContext _db;
     private readonly IConfiguration _config;
     private readonly IWalletService _walletService;
 
-    public AuthService(InMemoryDataStore store, IConfiguration config, IWalletService walletService)
+    public AuthService(AppDbContext db, IConfiguration config, IWalletService walletService)
     {
-        _store = store;
+        _db = db;
         _config = config;
         _walletService = walletService;
     }
 
-    public (bool Success, string Error, AuthResponseDto? Response) Register(RegisterDto dto)
+    public async Task<(bool Success, string Error, AuthResponseDto? Response)> RegisterAsync(RegisterDto dto)
     {
-        if (!InMemoryDataStore.SupportedCountries.Contains(dto.CountryCode.ToUpper()))
-            return (false, $"Country '{dto.CountryCode}' is not supported. Supported: SN, CI, ML, BF, UG, GM, GH", null);
+        // Resolve country: use supplied value or auto-detect from phone prefix
+        var country = !string.IsNullOrWhiteSpace(dto.CountryCode)
+            ? dto.CountryCode.ToUpper()
+            : WaveConstants.DetectCountry(dto.PhoneNumber);
 
-        if (_store.FindUserByPhone(dto.PhoneNumber) is not null)
+        if (country is null)
+            return (false, "Could not detect country from phone number. Please supply countryCode (SN, CI, ML, BF, UG, GM, GH).", null);
+
+        if (!WaveConstants.SupportedCountries.Contains(country))
+            return (false, $"Country '{country}' is not supported. Supported: SN, CI, ML, BF, UG, GM, GH", null);
+
+        dto.CountryCode = country;
+
+        if (await _db.Users.AnyAsync(u => u.PhoneNumber == dto.PhoneNumber))
             return (false, "Phone number already registered", null);
 
         var user = new User
         {
             PhoneNumber = dto.PhoneNumber,
             FullName = dto.FullName,
-            CountryCode = dto.CountryCode.ToUpper(),
+            CountryCode = country,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin),
             Role = UserRole.Customer,
             Status = AccountStatus.Active
         };
 
-        var wallet = _walletService.CreateWallet(user.Id, user.CountryCode);
+        var wallet = await _walletService.CreateWalletAsync(user.Id, user.CountryCode);
+        wallet.Balance = GetSeedBalance(user.CountryCode);
         user.WalletId = wallet.Id;
 
-        // Seed test balance so the wallet is immediately usable
-        wallet.Balance = GetSeedBalance(user.CountryCode);
-        _store.AddUser(user);
+        _db.Users.Add(user);
+        _db.Wallets.Add(wallet);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, BuildResponse(user, wallet));
     }
 
-    public (bool Success, string Error, AuthResponseDto? Response) Login(LoginDto dto)
+    public async Task<(bool Success, string Error, AuthResponseDto? Response)> LoginAsync(LoginDto dto)
     {
-        var user = _store.FindUserByPhone(dto.PhoneNumber);
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.PhoneNumber == dto.PhoneNumber);
         if (user is null || !BCrypt.Net.BCrypt.Verify(dto.Pin, user.PasswordHash))
             return (false, "Invalid phone number or PIN", null);
 
@@ -66,9 +78,9 @@ public class AuthService : IAuthService
             return (false, "Account is suspended. Contact support.", null);
 
         user.LastLoginAt = DateTime.UtcNow;
-        _store.UpdateUser(user);
+        await _db.SaveChangesAsync();
 
-        var wallet = _store.FindWalletById(user.WalletId)!;
+        var wallet = await _db.Wallets.FirstAsync(w => w.Id == user.WalletId);
         return (true, string.Empty, BuildResponse(user, wallet));
     }
 
@@ -110,9 +122,9 @@ public class AuthService : IAuthService
 
     private static decimal GetSeedBalance(string countryCode) => countryCode switch
     {
-        "UG" => 500_000m,  // ~130 USD in UGX
-        "GH" => 2_000m,    // ~130 USD in GHS
-        "GM" => 9_000m,    // ~130 USD in GMD
-        _ => 100_000m      // ~150 USD in XOF
+        "UG" => 500_000m,
+        "GH" => 2_000m,
+        "GM" => 9_000m,
+        _ => 100_000m
     };
 }

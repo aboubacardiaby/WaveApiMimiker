@@ -13,8 +13,8 @@ public class RegisterDto
     [Required]
     public string FullName { get; set; } = string.Empty;
 
-    [Required]
-    public string CountryCode { get; set; } = string.Empty; // SN, CI, ML, BF, UG, GM, GH
+    // Optional — auto-detected from phone prefix if omitted (e.g. +220 → GM)
+    public string? CountryCode { get; set; }
 }
 
 public class LoginDto

@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using WaveApiMimiker.Data;
 using WaveApiMimiker.DTOs;
 using WaveApiMimiker.Models;
@@ -6,65 +7,65 @@ namespace WaveApiMimiker.Services;
 
 public interface IAgentService
 {
-    (bool Success, string Error, AgentDto? Agent) RegisterAgent(string userId, RegisterAgentDto dto);
-    (bool Success, string Error, AgentDto? Agent) GetAgent(string agentCode);
-    (bool Success, string Error, List<AgentDto> Agents) GetAgentsByCountry(string countryCode);
+    Task<(bool Success, string Error, AgentDto? Agent)> RegisterAgentAsync(string userId, RegisterAgentDto dto);
+    Task<(bool Success, string Error, AgentDto? Agent)> GetAgentAsync(string agentCode);
+    Task<(bool Success, string Error, List<AgentDto> Agents)> GetAgentsByCountryAsync(string countryCode);
 }
 
 public class AgentService : IAgentService
 {
-    private readonly InMemoryDataStore _store;
+    private readonly AppDbContext _db;
 
-    public AgentService(InMemoryDataStore store)
+    public AgentService(AppDbContext db)
     {
-        _store = store;
+        _db = db;
     }
 
-    public (bool Success, string Error, AgentDto? Agent) RegisterAgent(string userId, RegisterAgentDto dto)
+    public async Task<(bool Success, string Error, AgentDto? Agent)> RegisterAgentAsync(string userId, RegisterAgentDto dto)
     {
-        var user = _store.FindUserById(userId);
+        var user = await _db.Users.FindAsync(userId);
         if (user is null) return (false, "User not found", null);
 
-        if (_store.FindAgentByUserId(userId) is not null)
+        if (await _db.Agents.AnyAsync(a => a.UserId == userId))
             return (false, "This account is already registered as an agent", null);
 
-        // Promote user role
         user.Role = UserRole.Agent;
-        _store.UpdateUser(user);
 
         var agent = new Agent
         {
             UserId = userId,
-            AgentCode = GenerateAgentCode(user.CountryCode),
+            AgentCode = $"{user.CountryCode}-{user.PhoneNumber[^5..]}",
             BusinessName = dto.BusinessName,
             CountryCode = user.CountryCode,
             PhoneNumber = user.PhoneNumber,
             City = dto.City,
             IsActive = true
         };
-        _store.AddAgent(agent);
+        _db.Agents.Add(agent);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, MapToDto(agent));
     }
 
-    public (bool Success, string Error, AgentDto? Agent) GetAgent(string agentCode)
+    public async Task<(bool Success, string Error, AgentDto? Agent)> GetAgentAsync(string agentCode)
     {
-        var agent = _store.FindAgentByCode(agentCode);
+        var agent = await _db.Agents.FirstOrDefaultAsync(a => a.AgentCode == agentCode);
         if (agent is null) return (false, "Agent not found", null);
         return (true, string.Empty, MapToDto(agent));
     }
 
-    public (bool Success, string Error, List<AgentDto> Agents) GetAgentsByCountry(string countryCode)
+    public async Task<(bool Success, string Error, List<AgentDto> Agents)> GetAgentsByCountryAsync(string countryCode)
     {
-        if (!InMemoryDataStore.SupportedCountries.Contains(countryCode.ToUpper()))
+        if (!WaveConstants.SupportedCountries.Contains(countryCode.ToUpper()))
             return (false, $"Unsupported country: {countryCode}", new());
 
-        var agents = _store.GetAgentsByCountry(countryCode.ToUpper()).Select(MapToDto).ToList();
+        var agents = await _db.Agents
+            .Where(a => a.CountryCode == countryCode.ToUpper() && a.IsActive)
+            .Select(a => MapToDto(a))
+            .ToListAsync();
+
         return (true, string.Empty, agents);
     }
-
-    private static string GenerateAgentCode(string country)
-        => $"{country}-{Random.Shared.Next(10000, 99999)}";
 
     private static AgentDto MapToDto(Agent a) => new()
     {

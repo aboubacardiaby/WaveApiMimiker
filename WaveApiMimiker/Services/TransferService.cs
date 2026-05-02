@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using WaveApiMimiker.Data;
 using WaveApiMimiker.DTOs;
 using WaveApiMimiker.Models;
@@ -6,47 +7,44 @@ namespace WaveApiMimiker.Services;
 
 public interface ITransferService
 {
-    (bool Success, string Error, TransactionDto? Tx) SendMoney(string senderUserId, SendMoneyDto dto);
-    (bool Success, string Error, TransactionDto? Tx) CashIn(string agentUserId, CashInDto dto);
-    (bool Success, string Error, TransactionDto? Tx) CashOut(string agentUserId, CashOutDto dto);
-    (bool Success, string Error, TransactionDto? Tx) AirtimeTopUp(string senderUserId, AirtimeDto dto);
-    (bool Success, string Error, TransactionDto? Tx) GetTransaction(string txId, string userId);
-    (bool Success, string Error, List<TransactionDto> Transactions) GetHistory(string userId, int page, int pageSize);
-    FeeResponseDto CalculateFee(FeeRequestDto dto, string userCountry, string currency);
+    Task<(bool Success, string Error, TransactionDto? Tx)> SendMoneyAsync(string senderUserId, SendMoneyDto dto);
+    Task<(bool Success, string Error, TransactionDto? Tx)> CashInAsync(string agentUserId, CashInDto dto);
+    Task<(bool Success, string Error, TransactionDto? Tx)> CashOutAsync(string agentUserId, CashOutDto dto);
+    Task<(bool Success, string Error, TransactionDto? Tx)> AirtimeTopUpAsync(string senderUserId, AirtimeDto dto);
+    Task<(bool Success, string Error, TransactionDto? Tx)> GetTransactionAsync(string txId, string userId);
+    Task<(bool Success, string Error, List<TransactionDto> Transactions)> GetHistoryAsync(string userId, int page, int pageSize);
+    Task<FeeResponseDto> CalculateFeeAsync(FeeRequestDto dto, string userCountry, string currency);
 }
 
 public class TransferService : ITransferService
 {
-    private readonly InMemoryDataStore _store;
+    private readonly AppDbContext _db;
     private readonly IFeeService _feeService;
-    private readonly IWalletService _walletService;
 
-    public TransferService(InMemoryDataStore store, IFeeService feeService, IWalletService walletService)
+    public TransferService(AppDbContext db, IFeeService feeService)
     {
-        _store = store;
+        _db = db;
         _feeService = feeService;
-        _walletService = walletService;
     }
 
-    public (bool Success, string Error, TransactionDto? Tx) SendMoney(string senderUserId, SendMoneyDto dto)
+    public async Task<(bool Success, string Error, TransactionDto? Tx)> SendMoneyAsync(string senderUserId, SendMoneyDto dto)
     {
-        var sender = _store.FindUserById(senderUserId);
+        var sender = await _db.Users.FindAsync(senderUserId);
         if (sender is null) return (false, "Sender not found", null);
 
-        var receiver = _store.FindUserByPhone(dto.ReceiverPhone);
+        var receiver = await _db.Users.FirstOrDefaultAsync(u => u.PhoneNumber == dto.ReceiverPhone);
         if (receiver is null) return (false, $"No Wave account found for {dto.ReceiverPhone}", null);
 
         if (sender.PhoneNumber == receiver.PhoneNumber)
             return (false, "Cannot transfer to yourself", null);
 
-        var senderWallet = _store.FindWalletById(sender.WalletId)!;
-        var receiverWallet = _store.FindWalletById(receiver.WalletId)!;
+        var senderWallet = await _db.Wallets.FirstAsync(w => w.Id == sender.WalletId);
+        var receiverWallet = await _db.Wallets.FirstAsync(w => w.Id == receiver.WalletId);
 
-        _walletService.ResetDailyLimitIfNeeded(senderWallet);
+        ResetDailyLimitIfNeeded(senderWallet);
 
         bool isInternational = sender.CountryCode != receiver.CountryCode;
-        var (fee, feeDesc) = _feeService.Calculate(TransactionType.Transfer, dto.Amount,
-            sender.CountryCode, receiver.CountryCode);
+        var (fee, _) = _feeService.Calculate(TransactionType.Transfer, dto.Amount, sender.CountryCode, receiver.CountryCode);
         var totalDeducted = dto.Amount + fee;
 
         var validationError = ValidateTransfer(senderWallet, totalDeducted, dto.Amount);
@@ -67,34 +65,30 @@ public class TransferService : ITransferService
             Note = dto.Note,
             IsInternational = isInternational
         };
-        _store.AddTransaction(tx);
+        _db.Transactions.Add(tx);
 
         senderWallet.Balance -= totalDeducted;
         senderWallet.DailyTransferSent += dto.Amount;
-        _store.UpdateWallet(senderWallet);
-
-        // Credit receiver (convert currency if international — simplified 1:1 for test)
         receiverWallet.Balance += dto.Amount;
-        _store.UpdateWallet(receiverWallet);
 
         tx.Status = TransactionStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
-        _store.UpdateTransaction(tx);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, MapToDto(tx));
     }
 
-    public (bool Success, string Error, TransactionDto? Tx) CashIn(string agentUserId, CashInDto dto)
+    public async Task<(bool Success, string Error, TransactionDto? Tx)> CashInAsync(string agentUserId, CashInDto dto)
     {
-        var agent = _store.FindAgentByUserId(agentUserId);
+        var agent = await _db.Agents.FirstOrDefaultAsync(a => a.UserId == agentUserId);
         if (agent is null || !agent.IsActive) return (false, "Agent not found or inactive", null);
 
-        var customer = _store.FindUserByPhone(dto.CustomerPhone);
+        var agentUser = await _db.Users.FindAsync(agentUserId);
+        var customer = await _db.Users.FirstOrDefaultAsync(u => u.PhoneNumber == dto.CustomerPhone);
         if (customer is null) return (false, $"No Wave account found for {dto.CustomerPhone}", null);
 
-        var agentUser = _store.FindUserById(agentUserId)!;
-        var agentWallet = _store.FindWalletById(agentUser.WalletId)!;
-        var customerWallet = _store.FindWalletById(customer.WalletId)!;
+        var agentWallet = await _db.Wallets.FirstAsync(w => w.Id == agentUser!.WalletId);
+        var customerWallet = await _db.Wallets.FirstAsync(w => w.Id == customer.WalletId);
 
         if (agentWallet.Balance < dto.Amount)
             return (false, "Agent has insufficient float balance", null);
@@ -104,7 +98,7 @@ public class TransferService : ITransferService
             Type = TransactionType.CashIn,
             Status = TransactionStatus.Pending,
             SenderWalletId = agentWallet.Id,
-            SenderPhone = agentUser.PhoneNumber,
+            SenderPhone = agentUser!.PhoneNumber,
             ReceiverWalletId = customerWallet.Id,
             ReceiverPhone = customer.PhoneNumber,
             Amount = dto.Amount,
@@ -113,35 +107,30 @@ public class TransferService : ITransferService
             Currency = customerWallet.Currency,
             AgentId = agent.Id
         };
-        _store.AddTransaction(tx);
+        _db.Transactions.Add(tx);
 
         agentWallet.Balance -= dto.Amount;
-        _store.UpdateWallet(agentWallet);
-
         customerWallet.Balance += dto.Amount;
-        _store.UpdateWallet(customerWallet);
-
         agent.TotalCashInToday += dto.Amount;
-        _store.UpdateAgent(agent);
 
         tx.Status = TransactionStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
-        _store.UpdateTransaction(tx);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, MapToDto(tx));
     }
 
-    public (bool Success, string Error, TransactionDto? Tx) CashOut(string agentUserId, CashOutDto dto)
+    public async Task<(bool Success, string Error, TransactionDto? Tx)> CashOutAsync(string agentUserId, CashOutDto dto)
     {
-        var agent = _store.FindAgentByUserId(agentUserId);
+        var agent = await _db.Agents.FirstOrDefaultAsync(a => a.UserId == agentUserId);
         if (agent is null || !agent.IsActive) return (false, "Agent not found or inactive", null);
 
-        var customer = _store.FindUserByPhone(dto.CustomerPhone);
+        var agentUser = await _db.Users.FindAsync(agentUserId);
+        var customer = await _db.Users.FirstOrDefaultAsync(u => u.PhoneNumber == dto.CustomerPhone);
         if (customer is null) return (false, $"No Wave account found for {dto.CustomerPhone}", null);
 
-        var agentUser = _store.FindUserById(agentUserId)!;
-        var agentWallet = _store.FindWalletById(agentUser.WalletId)!;
-        var customerWallet = _store.FindWalletById(customer.WalletId)!;
+        var agentWallet = await _db.Wallets.FirstAsync(w => w.Id == agentUser!.WalletId);
+        var customerWallet = await _db.Wallets.FirstAsync(w => w.Id == customer.WalletId);
 
         var (fee, _) = _feeService.Calculate(TransactionType.CashOut, dto.Amount);
         var totalDeducted = dto.Amount + fee;
@@ -156,37 +145,32 @@ public class TransferService : ITransferService
             SenderWalletId = customerWallet.Id,
             SenderPhone = customer.PhoneNumber,
             ReceiverWalletId = agentWallet.Id,
-            ReceiverPhone = agentUser.PhoneNumber,
+            ReceiverPhone = agentUser!.PhoneNumber,
             Amount = dto.Amount,
             Fee = fee,
             TotalDeducted = totalDeducted,
             Currency = customerWallet.Currency,
             AgentId = agent.Id
         };
-        _store.AddTransaction(tx);
+        _db.Transactions.Add(tx);
 
         customerWallet.Balance -= totalDeducted;
-        _store.UpdateWallet(customerWallet);
-
-        agentWallet.Balance += dto.Amount; // agent receives cash amount, fee goes to Wave
-        _store.UpdateWallet(agentWallet);
-
+        agentWallet.Balance += dto.Amount;
         agent.TotalCashOutToday += dto.Amount;
-        _store.UpdateAgent(agent);
 
         tx.Status = TransactionStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
-        _store.UpdateTransaction(tx);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, MapToDto(tx));
     }
 
-    public (bool Success, string Error, TransactionDto? Tx) AirtimeTopUp(string senderUserId, AirtimeDto dto)
+    public async Task<(bool Success, string Error, TransactionDto? Tx)> AirtimeTopUpAsync(string senderUserId, AirtimeDto dto)
     {
-        var sender = _store.FindUserById(senderUserId);
+        var sender = await _db.Users.FindAsync(senderUserId);
         if (sender is null) return (false, "User not found", null);
 
-        var wallet = _store.FindWalletById(sender.WalletId)!;
+        var wallet = await _db.Wallets.FirstAsync(w => w.Id == sender.WalletId);
         var (fee, _) = _feeService.Calculate(TransactionType.AirtimeTopUp, dto.Amount);
         var totalDeducted = dto.Amount + fee;
 
@@ -206,63 +190,71 @@ public class TransferService : ITransferService
             Currency = wallet.Currency,
             Note = $"Airtime top-up via {dto.Operator}"
         };
-        _store.AddTransaction(tx);
+        _db.Transactions.Add(tx);
 
         wallet.Balance -= totalDeducted;
-        _store.UpdateWallet(wallet);
 
         tx.Status = TransactionStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
-        _store.UpdateTransaction(tx);
+        await _db.SaveChangesAsync();
 
         return (true, string.Empty, MapToDto(tx));
     }
 
-    public (bool Success, string Error, TransactionDto? Tx) GetTransaction(string txId, string userId)
+    public async Task<(bool Success, string Error, TransactionDto? Tx)> GetTransactionAsync(string txId, string userId)
     {
-        var user = _store.FindUserById(userId);
+        var user = await _db.Users.FindAsync(userId);
         if (user is null) return (false, "User not found", null);
 
-        var tx = _store.FindTransactionById(txId)
-            ?? _store.FindTransactionByReference(txId);
-
+        var tx = await _db.Transactions.FirstOrDefaultAsync(t => t.Id == txId || t.Reference == txId);
         if (tx is null) return (false, "Transaction not found", null);
 
-        // Users may only see their own transactions
-        var wallet = _store.FindWalletById(user.WalletId)!;
-        if (tx.SenderWalletId != wallet.Id && tx.ReceiverWalletId != wallet.Id)
+        if (tx.SenderWalletId != user.WalletId && tx.ReceiverWalletId != user.WalletId)
             return (false, "Transaction not found", null);
 
         return (true, string.Empty, MapToDto(tx));
     }
 
-    public (bool Success, string Error, List<TransactionDto> Transactions) GetHistory(
+    public async Task<(bool Success, string Error, List<TransactionDto> Transactions)> GetHistoryAsync(
         string userId, int page, int pageSize)
     {
-        var user = _store.FindUserById(userId);
+        var user = await _db.Users.FindAsync(userId);
         if (user is null) return (false, "User not found", new());
 
-        var txs = _store.GetTransactionsForWallet(user.WalletId, page, pageSize)
-            .Select(MapToDto)
-            .ToList();
+        var txs = await _db.Transactions
+            .Where(t => t.SenderWalletId == user.WalletId || t.ReceiverWalletId == user.WalletId)
+            .OrderByDescending(t => t.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(t => MapToDto(t))
+            .ToListAsync();
 
         return (true, string.Empty, txs);
     }
 
-    public FeeResponseDto CalculateFee(FeeRequestDto dto, string userCountry, string currency)
+    public Task<FeeResponseDto> CalculateFeeAsync(FeeRequestDto dto, string userCountry, string currency)
     {
         if (!Enum.TryParse<TransactionType>(dto.TransactionType, true, out var type))
             type = TransactionType.Transfer;
 
         var (fee, desc) = _feeService.Calculate(type, dto.Amount, userCountry, dto.ReceiverCountry);
-        return new FeeResponseDto
+        return Task.FromResult(new FeeResponseDto
         {
             Amount = dto.Amount,
             Fee = fee,
             TotalDeducted = dto.Amount + fee,
             Currency = currency,
             FeeDescription = desc
-        };
+        });
+    }
+
+    private static void ResetDailyLimitIfNeeded(Wallet wallet)
+    {
+        if (DateTime.UtcNow >= wallet.DailyLimitResetAt)
+        {
+            wallet.DailyTransferSent = 0;
+            wallet.DailyLimitResetAt = DateTime.UtcNow.Date.AddDays(1);
+        }
     }
 
     private static string? ValidateTransfer(Wallet wallet, decimal totalDeducted, decimal amount)

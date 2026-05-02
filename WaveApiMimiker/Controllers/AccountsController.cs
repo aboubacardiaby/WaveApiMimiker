@@ -56,10 +56,18 @@ public class AccountsController : ControllerBase
             new { phone = "+233503000003",  name = "Kofi Agyemang",    country = "GH", currency = "GHS", balance = 8_000, role = "Agent",    pin = "1234" },
         };
 
+        var countries = WaveConstants.PhonePrefixes
+            .Where(p => WaveConstants.SupportedCountries.Contains(p.CountryCode))
+            .Select(p => new { p.Prefix, p.CountryCode, currency = WaveConstants.CountryCurrencies[p.CountryCode] })
+            .DistinctBy(p => p.CountryCode)
+            .OrderBy(p => p.CountryCode)
+            .ToList();
+
         return Ok(new
         {
-            note = "All accounts use PIN '1234'. POST to /api/auth/login to receive a JWT token.",
+            note = "All accounts use PIN '1234'. POST to /api/auth/login to receive a JWT token. CountryCode is auto-detected from the phone prefix when registering.",
             totalAccounts = accounts.Length,
+            supportedCountries = countries,
             accounts
         });
     }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using WaveApiMimiker.DTOs;
+using Microsoft.EntityFrameworkCore;
+using WaveApiMimiker.Data;
 using WaveApiMimiker.Services;
 
 namespace WaveApiMimiker.Controllers;
@@ -10,21 +11,28 @@ namespace WaveApiMimiker.Controllers;
 [Authorize]
 public class WalletController : ControllerBase
 {
+    private readonly AppDbContext _db;
     private readonly IWalletService _walletService;
 
-    public WalletController(IWalletService walletService)
+    public WalletController(AppDbContext db, IWalletService walletService)
     {
+        _db = db;
         _walletService = walletService;
     }
 
     /// <summary>Get the authenticated user's wallet balance and limits</summary>
     [HttpGet("balance")]
-    public IActionResult GetBalance()
+    public async Task<IActionResult> GetBalance()
     {
         var userId = UserId();
-        var (success, error, wallet) = _walletService.GetWallet(userId);
-        if (!success) return NotFound(new { error });
-        return Ok(wallet);
+        var user = await _db.Users.FindAsync(userId);
+        if (user is null) return NotFound(new { error = "User not found" });
+
+        var wallet = await _db.Wallets.FirstOrDefaultAsync(w => w.Id == user.WalletId);
+        if (wallet is null) return NotFound(new { error = "Wallet not found" });
+
+        await _walletService.ResetDailyLimitIfNeededAsync(wallet, _db);
+        return Ok(_walletService.MapToDto(wallet));
     }
 
     private string UserId()

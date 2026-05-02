@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using WaveApiMimiker.Data;
 using WaveApiMimiker.DTOs;
 using WaveApiMimiker.Services;
@@ -12,19 +13,19 @@ namespace WaveApiMimiker.Controllers;
 public class TransferController : ControllerBase
 {
     private readonly ITransferService _transferService;
-    private readonly InMemoryDataStore _store;
+    private readonly AppDbContext _db;
 
-    public TransferController(ITransferService transferService, InMemoryDataStore store)
+    public TransferController(ITransferService transferService, AppDbContext db)
     {
         _transferService = transferService;
-        _store = store;
+        _db = db;
     }
 
     /// <summary>Send money to another Wave user by phone number (free for domestic)</summary>
     [HttpPost("send")]
-    public IActionResult Send([FromBody] SendMoneyDto dto)
+    public async Task<IActionResult> Send([FromBody] SendMoneyDto dto)
     {
-        var (success, error, tx) = _transferService.SendMoney(UserId(), dto);
+        var (success, error, tx) = await _transferService.SendMoneyAsync(UserId(), dto);
         if (!success) return BadRequest(new { error });
         return Ok(tx);
     }
@@ -32,9 +33,9 @@ public class TransferController : ControllerBase
     /// <summary>Agent: deposit cash into a customer's wallet (cash-in, free)</summary>
     [HttpPost("cash-in")]
     [Authorize(Roles = "Agent,Admin")]
-    public IActionResult CashIn([FromBody] CashInDto dto)
+    public async Task<IActionResult> CashIn([FromBody] CashInDto dto)
     {
-        var (success, error, tx) = _transferService.CashIn(UserId(), dto);
+        var (success, error, tx) = await _transferService.CashInAsync(UserId(), dto);
         if (!success) return BadRequest(new { error });
         return Ok(tx);
     }
@@ -42,51 +43,51 @@ public class TransferController : ControllerBase
     /// <summary>Agent: withdraw cash from a customer's wallet (cash-out, 1% fee)</summary>
     [HttpPost("cash-out")]
     [Authorize(Roles = "Agent,Admin")]
-    public IActionResult CashOut([FromBody] CashOutDto dto)
+    public async Task<IActionResult> CashOut([FromBody] CashOutDto dto)
     {
-        var (success, error, tx) = _transferService.CashOut(UserId(), dto);
+        var (success, error, tx) = await _transferService.CashOutAsync(UserId(), dto);
         if (!success) return BadRequest(new { error });
         return Ok(tx);
     }
 
     /// <summary>Buy mobile airtime for any phone number</summary>
     [HttpPost("airtime")]
-    public IActionResult Airtime([FromBody] AirtimeDto dto)
+    public async Task<IActionResult> Airtime([FromBody] AirtimeDto dto)
     {
-        var (success, error, tx) = _transferService.AirtimeTopUp(UserId(), dto);
+        var (success, error, tx) = await _transferService.AirtimeTopUpAsync(UserId(), dto);
         if (!success) return BadRequest(new { error });
         return Ok(tx);
     }
 
     /// <summary>Get transaction by ID or reference number</summary>
     [HttpGet("{id}")]
-    public IActionResult GetTransaction(string id)
+    public async Task<IActionResult> GetTransaction(string id)
     {
-        var (success, error, tx) = _transferService.GetTransaction(id, UserId());
+        var (success, error, tx) = await _transferService.GetTransactionAsync(id, UserId());
         if (!success) return NotFound(new { error });
         return Ok(tx);
     }
 
     /// <summary>Get paginated transaction history for the authenticated user</summary>
     [HttpGet("history")]
-    public IActionResult History([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> History([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 100) pageSize = 20;
 
-        var (success, error, txs) = _transferService.GetHistory(UserId(), page, pageSize);
+        var (success, error, txs) = await _transferService.GetHistoryAsync(UserId(), page, pageSize);
         if (!success) return BadRequest(new { error });
         return Ok(new { page, pageSize, transactions = txs });
     }
 
     /// <summary>Calculate fee before executing a transaction</summary>
     [HttpPost("calculate-fee")]
-    public IActionResult CalculateFee([FromBody] FeeRequestDto dto)
+    public async Task<IActionResult> CalculateFee([FromBody] FeeRequestDto dto)
     {
-        var user = _store.FindUserById(UserId());
+        var user = await _db.Users.FindAsync(UserId());
         if (user is null) return Unauthorized();
-        var currency = InMemoryDataStore.CountryCurrencies[user.CountryCode];
-        var result = _transferService.CalculateFee(dto, user.CountryCode, currency);
+        var currency = WaveConstants.CountryCurrencies[user.CountryCode];
+        var result = await _transferService.CalculateFeeAsync(dto, user.CountryCode, currency);
         return Ok(result);
     }
 
